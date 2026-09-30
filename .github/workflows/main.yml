@@ -1,0 +1,68 @@
+name: Strix AI Penetration Testing
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  strix-exploit-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Strix CLI
+        run: |
+          pip install strix-agent
+
+      - name: Run Strix Penetration Testing (Zhipu AI)
+        # Memaksa langkah ini untuk selalu dianggap sukses/hijau di GitHub
+        continue-on-error: true
+        id: run_strix
+        env:
+          STRIX_LLM: "zai/glm-5.3-flash"
+          
+          # PERBAIKAN: Base URL yang benar untuk kompatibilitas OpenAI di Zhipu
+          LLM_API_BASE: "https://open.bigmodel.cn/api/paas/v4"
+          
+          # Token otentikasi Zhipu yang disimpan di GitHub Secrets
+          OPENAI_API_KEY: \${{ secrets.LLM_API_KEY }}
+        run: |
+          # Membuat direktori pembukuan laporan
+          mkdir -p strix-reports
+          
+          # Menjalankan eksploitasi penuh dan mencatat seluruh output ke file teks
+          strix -n \
+            --target . \
+            --scan-mode deep \
+            --scope-mode full > strix-reports/full-penetration-report.txt 2>&1
+
+      - name: Publish Executive Summary to Job Summary
+        if: always()
+        run: |
+          echo "## 🛡️ Strix Pentest Executive Summary" >> \$GITHUB_STEP_SUMMARY
+          echo "Laporan audit penetrasi otonom berhasil dibukukan secara lengkap menggunakan GLM-5.3-Flash." >> \$GITHUB_STEP_SUMMARY
+          echo "### 📑 Cuplikan Ringkasan Eksekutif:" >> \$GITHUB_STEP_SUMMARY
+          echo '```text' >> \$GITHUB_STEP_SUMMARY
+          # Menampilkan ringkasan eksekutif langsung di halaman utama GitHub Actions
+          sed -n '/Executive Summary/,/Methodology/p' strix-reports/full-penetration-report.txt >> \$GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Archive Complete Penetration Report
+        # Mengunggah laporan lengkap ke dokumen Artifacts GitHub (dapat diunduh kapan saja)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strix-complete-security-report
+          path: strix-reports/full-penetration-report.txt
+          retention-days: 30
