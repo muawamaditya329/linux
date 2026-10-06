@@ -1,0 +1,199 @@
+name: Strix Security Scan
+
+# Strix AI pentest agent (https://github.com/usestrix/strix) dengan model
+# GLM glm-5.3-flash via z.ai (OpenAI-compatible endpoint).
+#
+# Jika Strix menemukan kerentanan tervalidasi (exit code 2 / ada file
+# vulnerabilities/*.md):
+#   1. Temuan dipublikasikan ke GitHub Release (report + SARIF + tarball)
+#   2. Repository otomatis di-set private (bisa dimatikan via input
+#      auto_private=false saat trigger manual)
+#
+# Secrets yang dibutuhkan:
+#   ZAI_API_KEY : API key z.ai / bigmodel.cn
+#   ADMIN_PAT   : GitHub PAT dengan Administration:write (untuk set private)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target scan (subdirektori repo, mis. drivers/staging, atau URL)"
+        required: false
+        default: "."
+      scan_mode:
+        description: "Scan mode: quick | standard | deep"
+        required: false
+        default: "quick"
+      max_budget:
+        description: "Budget maksimum LLM (USD)"
+        required: false
+        default: "10"
+      instruction:
+        description: "Instruksi tambahan untuk Strix (opsional)"
+        required: false
+        default: ""
+      auto_private:
+        description: "Set repo private jika ada temuan"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "0 3 * * 1" # Senin 03:00 UTC (10:00 WIB)
+
+permissions:
+  contents: write # untuk membuat GitHub Release
+
+concurrency:
+  group: strix-scan
+  cancel-in-progress: false
+
+jobs:
+  strix-scan:
+    runs-on: ubuntu-latest # Docker sudah tersedia (dibutuhkan Strix)
+    timeout-minutes: 350
+    env:
+      STRIX_LLM: openai/glm-5.3-flash
+      LLM_API_KEY: ${{ secrets.ZAI_API_KEY }}
+      LLM_API_BASE: https://api.z.ai/api/paas/v4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Trigger dispatch/schedule tidak pakai diff-scope, jadi shallow cukup.
+          # Ubah ke fetch-depth: 0 jika menambah trigger pull_request (scope diff).
+          fetch-depth: 1
+
+      - name: Install Strix
+        run: |
+          curl -sSL https://strix.ai/install | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          if ! command -v strix; then
+            echo "::error::strix tidak ditemukan setelah install"
+            exit 1
+          fi
+
+      - name: Run Strix scan
+        id: scan
+        env:
+          TARGET: ${{ inputs.target || '.' }}
+          SCAN_MODE: ${{ inputs.scan_mode || 'quick' }}
+          MAX_BUDGET: ${{ inputs.max_budget || '10' }}
+          INSTRUCTION: ${{ inputs.instruction || '' }}
+        run: |
+          set +e
+          CMD=(strix -n -t "$TARGET" --scan-mode "$SCAN_MODE" --max-budget "$MAX_BUDGET")
+          if [ -n "$INSTRUCTION" ]; then
+            CMD+=(--instruction "$INSTRUCTION")
+          fi
+          "${CMD[@]}"
+          rc=$?
+          echo "exitcode=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc # 0 bersih, 1 error setup, 2 kerentanan ditemukan
+
+      - name: Collect findings
+        id: findings
+        if: always()
+        run: |
+          run_json=$(ls -t strix_runs/*/run.json 2>/dev/null | head -1 || true)
+          status="missing"
+          if [ -n "$run_json" ]; then
+            status=$(jq -r '.status // "unknown"' "$run_json")
+          fi
+          vuln_count=$(find strix_runs -path '*/vulnerabilities/*.md' 2>/dev/null | wc -l)
+          exitcode="${{ steps.scan.outputs.exitcode }}"
+
+          has=false
+          if [ "$vuln_count" -gt 0 ]; then
+            has=true
+          elif [ "$exitcode" = "2" ]; then
+            has=true
+          fi
+
+          echo "status=$status"          >> "$GITHUB_OUTPUT"
+          echo "vuln_count=$vuln_count"  >> "$GITHUB_OUTPUT"
+          echo "has_findings=$has"       >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Strix scan result"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Exit code | \`$exitcode\` (0 bersih / 1 error / 2 kerentanan) |"
+            echo "| Run status | \`$status\` |"
+            echo "| Temuan tervalidasi | **$vuln_count** |"
+            echo "| Model | \`$STRIX_LLM\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" != "completed" ]; then
+            echo "⚠️ Run status '$status' — scan kemungkinan terpotong budget selesai. Naikkan --max-budget." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload raw run data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: strix-run-${{ github.run_id }}
+          path: strix_runs/
+          if-no-files-found: ignore
+
+      - name: Publish findings to GitHub Release
+        if: always() && steps.findings.outputs.has_findings == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: strix-${{ github.run_id }}-${{ github.run_attempt }}
+          TARGET: ${{ inputs.target || '.' }}
+          SCAN_MODE: ${{ inputs.scan_mode || 'quick' }}
+          VULN_COUNT: ${{ steps.findings.outputs.vuln_count }}
+          RUN_STATUS: ${{ steps.findings.outputs.status }}
+        run: |
+          tar czf strix-findings.tar.gz strix_runs
+
+          {
+            echo "Automated Strix pentest menemukan **$VULN_COUNT kerentanan tervalidasi**."
+            echo ""
+            echo "- Target: \`$TARGET\`"
+            echo "- Mode: \`$SCAN_MODE\`"
+            echo "- Model: \`$STRIX_LLM\`"
+            echo "- Run status: \`$RUN_STATUS\`"
+            echo ""
+            echo "---"
+            echo ""
+            for f in $(find strix_runs -path '*/vulnerabilities/*.md' | sort); do
+              echo "## $(basename "$f")"
+              echo ""
+              cat "$f"
+              echo ""
+              echo "---"
+              echo ""
+            done
+          } > release-notes.md
+
+          ASSETS=(strix-findings.tar.gz)
+          sarif=$(find strix_runs -name findings.sarif | head -1 || true)
+          if [ -n "$sarif" ]; then
+            ASSETS+=("$sarif")
+          fi
+
+          gh release create "$TAG" "${ASSETS[@]}" \
+            --title "Strix findings $TAG" \
+            --notes-file release-notes.md
+
+      - name: Set repository to private
+        if: >-
+          always() &&
+          steps.findings.outputs.has_findings == 'true' &&
+          inputs.auto_private != false
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          http=$(curl -sS -o /tmp/priv.json -w '%{http_code}' -X PATCH \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO" \
+            -d '{"private": true}')
+          cat /tmp/priv.json
+          echo ""
+          if [ "$http" != "200" ]; then
+            echo "::error::Gagal set repo private (HTTP $http)"
+            exit 1
+          fi
+          echo "Repository $REPO sekarang PRIVATE"
