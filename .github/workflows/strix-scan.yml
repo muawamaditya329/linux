@@ -64,8 +64,8 @@ jobs:
       - name: Install Strix
         run: |
           curl -sSL https://strix.ai/install | bash
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.strix/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.strix/bin:$PATH"
           if ! command -v strix; then
             echo "::error::strix tidak ditemukan setelah install"
             exit 1
