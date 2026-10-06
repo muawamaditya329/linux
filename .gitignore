@@ -194,3 +194,6 @@ sphinx_*/
 
 # bc language scripts (not LLVM bitcode)
 !kernel/time/timeconst.bc
+
+# Strix scan output - never commit (see CWE-807 fix in strix-scan.yml)
+strix_runs/
