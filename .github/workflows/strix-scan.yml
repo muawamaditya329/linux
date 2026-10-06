@@ -98,7 +98,14 @@ jobs:
           if [ -n "$run_json" ]; then
             status=$(jq -r '.status // "unknown"' "$run_json")
           fi
-          vuln_count=$(find strix_runs -path '*/vulnerabilities/*.md' 2>/dev/null | wc -l)
+          # CWE-807 fix: file findings yang di-commit kolaborator (tanaman palsu)
+          # tidak dihitung — hanya output scan yang tidak ter-track git.
+          vuln_count=0
+          while IFS= read -r -d '' f; do
+            if ! git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+              vuln_count=$((vuln_count+1))
+            fi
+          done < <(find strix_runs -path '*/vulnerabilities/*.md' -print0 2>/dev/null)
           exitcode="${{ steps.scan.outputs.exitcode }}"
 
           has=false
@@ -156,14 +163,15 @@ jobs:
             echo ""
             echo "---"
             echo ""
-            for f in $(find strix_runs -path '*/vulnerabilities/*.md' | sort); do
-              echo "## $(basename "$f")"
-              echo ""
-              cat "$f"
-              echo ""
-              echo "---"
-              echo ""
-            done
+            find strix_runs -path '*/vulnerabilities/*.md' -print0 2>/dev/null | sort -z | \
+              while IFS= read -r -d '' f; do
+                echo "## $(basename "$f")"
+                echo ""
+                cat "$f"
+                echo ""
+                echo "---"
+                echo ""
+              done
           } > release-notes.md
 
           ASSETS=(strix-findings.tar.gz)
@@ -192,8 +200,13 @@ jobs:
             -d '{"private": true}')
           cat /tmp/priv.json
           echo ""
-          if [ "$http" != "200" ]; then
+          is_fork=$(curl -sS -H "Authorization: Bearer $ADMIN_TOKEN" \
+            "https://api.github.com/repos/$REPO" | python3 -c "import json,sys; print(str(json.load(sys.stdin).get('fork', False)))" 2>/dev/null || echo False)
+          if [ "$http" = "200" ]; then
+            echo "Repository $REPO sekarang PRIVATE"
+          elif [ "$is_fork" = "True" ]; then
+            echo "::warning::$REPO adalah fork - GitHub tidak mengizinkan fork publik di-set private (422). Dilewati."
+          else
             echo "::error::Gagal set repo private (HTTP $http)"
             exit 1
           fi
-          echo "Repository $REPO sekarang PRIVATE"
