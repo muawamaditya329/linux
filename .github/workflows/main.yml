@@ -30,13 +30,14 @@ jobs:
         continue-on-error: true
         id: run_strix
         env:
-          STRIX_LLM: "zai/glm-5.3-flash"
+          STRIX_LLM: "openai/glm-5.3-flash"
           
           # PERBAIKAN: Base URL yang benar untuk kompatibilitas OpenAI di Zhipu
           LLM_API_BASE: "https://open.bigmodel.cn/api/paas/v4"
           
           # Token otentikasi Zhipu yang disimpan di GitHub Secrets
-          OPENAI_API_KEY: \${{ secrets.LLM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.ZAI_API_KEY }}
+          LLM_API_KEY: ${{ secrets.ZAI_API_KEY }}
         run: |
           # Membuat direktori pembukuan laporan
           mkdir -p strix-reports
@@ -50,12 +51,12 @@ jobs:
       - name: Publish Executive Summary to Job Summary
         if: always()
         run: |
-          echo "## 🛡️ Strix Pentest Executive Summary" >> \$GITHUB_STEP_SUMMARY
-          echo "Laporan audit penetrasi otonom berhasil dibukukan secara lengkap menggunakan GLM-5.3-Flash." >> \$GITHUB_STEP_SUMMARY
-          echo "### 📑 Cuplikan Ringkasan Eksekutif:" >> \$GITHUB_STEP_SUMMARY
-          echo '```text' >> \$GITHUB_STEP_SUMMARY
+          echo "## 🛡️ Strix Pentest Executive Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Laporan audit penetrasi otonom berhasil dibukukan secara lengkap menggunakan GLM-5.3-Flash." >> $GITHUB_STEP_SUMMARY
+          echo "### 📑 Cuplikan Ringkasan Eksekutif:" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
           # Menampilkan ringkasan eksekutif langsung di halaman utama GitHub Actions
-          sed -n '/Executive Summary/,/Methodology/p' strix-reports/full-penetration-report.txt >> \$GITHUB_STEP_SUMMARY || true
+          sed -n '/Executive Summary/,/Methodology/p' strix-reports/full-penetration-report.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Archive Complete Penetration Report
